@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 import plotly.express as px
 
-# 1. 구글 시트 연결 (인증 정보 전체 유지)
+# 1. 구글 시트 연결 (인증 정보 생략 없음)
 def get_gspread_client():
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -39,15 +39,15 @@ def process_data(uploaded_file, status):
     existing_cols = [c for c in col_map.keys() if c in df_raw.columns]
     df = df_raw[existing_cols].rename(columns=col_map).copy()
     
-    # 수치형 변환
+    # 수치형 변환 및 결측치 0 채우기
     for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     # [핵심] 총금액 0원 예약 판별
     df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
-            
     df['RN'] = df['Rooms'] * df['Nights']
-    # ADR 에러 방지 (0 나누기 및 Non-finite 차단)
+    
+    # [에러 방어 1] ADR 계산 시 0 나누기 방지
     df['ADR'] = df.apply(lambda x: x['Room_Revenue'] / x['RN'] if x['RN'] > 0 else 0, axis=1)
     
     for col in ['CheckIn', 'Booking_Date']:
@@ -87,16 +87,18 @@ def process_data(uploaded_file, status):
     final_cols = ['Guest_Name', 'CheckIn', 'Booking_Date', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Nat_Group', 'Status', 'Stay_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Month_Label', 'Is_Zero_Rate']
     return df[final_cols], today_str
 
-# 3. 무삭제 상세 분석 렌더링 함수 (천 단위 콤마 적용)
+# 3. 무삭제 상세 분석 렌더링 (에러 원천 차단 가드 적용)
 def render_full_analysis(data, title):
     if data is None or data.empty:
         st.info(f"조회된 {title} 데이터가 없습니다.")
         return
     st.markdown(f"#### 📊 {title} 무삭제 상세 분석")
+    
     c1, c2 = st.columns(2)
     with c1:
         st.write("**🏢 거래처별 실적 (RN, 매출, ADR)**")
         acc = data.groupby('Account').agg({'RN':'sum','Room_Revenue':'sum'}).reset_index()
+        # [에러 방어 2] 무한대 및 NaN 제거 후 정수 변환
         acc['ADR'] = (acc['Room_Revenue'] / acc['RN']).replace([float('inf'), -float('inf')], 0).fillna(0).astype(int)
         st.table(acc.sort_values('Room_Revenue', ascending=False).style.format({'RN':'{:,}','Room_Revenue':'{:,}','ADR':'{:,}'}))
     with c2:
@@ -109,14 +111,19 @@ def render_full_analysis(data, title):
     pivot = data.pivot_table(index='Segment', columns='Month_Label', values='RN', aggfunc='sum', fill_value=0)
     st.table(pivot)
 
-# 4. 주기별 트렌드 분석 (천 단위 콤마 적용)
+# 4. 주기별 트렌드 (무삭제 전체 코드)
 def render_periodic_trend(data, group_col, label):
-    if data is None or data.empty: return
+    if data is None or data.empty:
+        st.warning(f"⚠️ {label} 분석 데이터가 없습니다.")
+        return
+    st.markdown(f"### 📈 {label} 실적 트렌드")
     summary = data.groupby(group_col).agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
-    summary['ADR'] = (summary['Room_Revenue'] / summary['RN']).replace([float('inf')], 0).fillna(0).astype(int)
+    # [에러 방어 3] 주기별 계산 시에도 무한대 차단
+    summary['ADR'] = (summary['Room_Revenue'] / summary['RN']).replace([float('inf'), -float('inf')], 0).fillna(0).astype(int)
+    
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.plotly_chart(px.line(summary, x=group_col, y='Room_Revenue', markers=True, title=f"{label} 트렌드"), use_container_width=True)
+        st.plotly_chart(px.line(summary, x=group_col, y='Room_Revenue', markers=True, title=f"{label} 매출 추이"), use_container_width=True)
     with col2:
         st.table(summary.sort_values(group_col).style.format({'RN':'{:,}', 'Room_Revenue':'{:,}', 'ADR':'{:,}'}))
 
@@ -148,12 +155,12 @@ try:
         filtered_df = db_df if sel_date == "전체 누적" else db_df[db_df['Snapshot_Date'] <= sel_date]
         paid_df = filtered_df[filtered_df['Is_Zero_Rate'] == False]
         zero_df = filtered_df[filtered_df['Is_Zero_Rate'] == True]
+        
         bk = paid_df[paid_df['Status'] == 'Booked']
-        cn = filtered_df[filtered_df['Status'] == 'Cancelled'] # 취소는 0원 여부와 상관없이 집계 가능(지배인님 선택)
+        cn = filtered_df[filtered_df['Status'] == 'Cancelled']
 
-        # --- [최상단] 유료 실적 8대 KPI 대시보드 (천 단위 포맷) ---
-        st.header(f"🏛️ 앰버 호텔 경영 리포트 ({sel_date})")
-        st.subheader("📍 실시간 유료 실적 요약 (Paid Summary)")
+        # --- [최상단] 유료 실적 8대 KPI ---
+        st.header(f"🏛️ 앰버 호텔 경영 요약 리포트 ({sel_date})")
         k1, k2, k3, k4 = st.columns(4)
         k5, k6, k7, k8 = st.columns(4)
         
@@ -171,24 +178,24 @@ try:
         
         st.divider()
 
-        # 월별 유료 실적 및 버짓 달성률 (천 단위 포맷)
+        # 월별 상세 테이블 (천 단위 콤마 & 소수점 제거)
         st.subheader("📅 월별 유료 실적 및 목표 달성률")
         m_bk = bk.groupby('Stay_Month').agg({'RN':'sum', 'Total_Revenue':'sum', 'Room_Revenue':'sum'}).reset_index()
-        m_bk['ADR'] = (m_bk['Room_Revenue'] / m_bk['RN']).fillna(0).astype(int)
-        m_cn = cn.groupby('Stay_Month').agg({'RN':'sum', 'Total_Revenue':'sum', 'Room_Revenue':'sum'}).reset_index()
+        m_bk['ADR'] = (m_bk['Room_Revenue'] / m_bk['RN']).replace([float('inf')], 0).fillna(0).astype(int)
         
+        m_cn = cn.groupby('Stay_Month').agg({'RN':'sum', 'Total_Revenue':'sum', 'Room_Revenue':'sum'}).reset_index()
         m_total = pd.merge(m_bk, m_cn, on='Stay_Month', how='outer', suffixes=('_예약', '_취소')).fillna(0)
+        
         if not budget_df.empty:
             m_total = pd.merge(m_total, budget_df, left_on='Stay_Month', right_on='Month', how='left').fillna(0)
             m_total['달성률(%)'] = (m_total['Room_Revenue_예약'] / m_total['Budget'] * 100).replace([float('inf')], 0).fillna(0).round(1)
 
         st.table(m_total.style.format({
             'RN_예약':'{:,}', 'Total_Revenue_예약':'{:,}', 'Room_Revenue_예약':'{:,}', 'ADR':'{:,}',
-            'RN_취소':'{:,}', 'Total_Revenue_취소':'{:,}', 'Room_Revenue_취소':'{:,}',
-            'Budget':'{:,}', '달성률(%)':'{}%'
+            'RN_취소':'{:,}', 'Total_Revenue_취소':'{:,}', 'Budget':'{:,}', '달성률(%)':'{}%'
         }))
 
-        # --- 탭 구성 (무삭제) ---
+        # 탭 구성 (무삭제 전체)
         tab_weekly, tab_monthly, tab_det, tab_zero, tab_up = st.tabs([
             "📅 주별 분석", "🗓️ 월별 분석", "📈 무삭제 상세 분석", "🆓 0원 예약 목록", "📤 업로드"
         ])
@@ -209,9 +216,9 @@ try:
             render_periodic_trend(net_df, 'Stay_Month', '월별')
 
         with tab_det:
-            st_bk, st_cn = st.tabs(["✅ 유료 예약 상세", "❌ 취소 상세"])
+            st_bk, st_cn = st.tabs(["✅ 유료 예약 상세", "❌ 유료 취소 상세"])
             with st_bk: render_full_analysis(bk, "유료 예약")
-            with st_cn: render_full_analysis(cn, "취소 내역")
+            with st_cn: render_full_analysis(cn, "유료 취소")
 
     with tab_up:
         m = st.radio("종류", ["신규 예약", "취소 내역"], horizontal=True)
@@ -223,4 +230,4 @@ try:
             st.success("✅ 데이터 저장 완료!")
 
 except Exception as e:
-    st.error(f"🚨 시스템 오류: {e}")
+    st.error(f"🚨 시스템 오류 발생: {e}")
