@@ -54,7 +54,7 @@ def process_data(uploaded_file, status):
     df['Lead_Time'] = (df['CheckIn'] - df['Booking_Date']).dt.days.fillna(0).astype(int)
     df['Day_of_Week'] = df['CheckIn'].dt.day_name()
     
-    # [추가 분석 컬럼 - 생략 없음]
+    # [분석용 컬럼 보강]
     df['Stay_YearWeek'] = df['CheckIn'].dt.strftime('%Y-%U주')
     df['Stay_Month'] = df['CheckIn'].dt.strftime('%Y-%m')
     
@@ -84,9 +84,9 @@ def process_data(uploaded_file, status):
     final_cols = ['Guest_Name', 'CheckIn', 'Booking_Date', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Nat_Group', 'Status', 'Stay_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Month_Label']
     return df[final_cols], today_str
 
-# 3. 무삭제 분석 렌더링 (지배인님 원본 로직 100% 동일 출력)
+# 3. 무삭제 상세 분석 렌더링 (지배인님 원본 로직 100%)
 def render_full_analysis(data, title):
-    st.markdown(f"### 📊 {title} 무삭제 상세 분석 리포트")
+    st.markdown(f"### 📊 {title} 무삭제 상세 분석")
     
     c1, c2 = st.columns(2)
     with c1:
@@ -101,9 +101,8 @@ def render_full_analysis(data, title):
         st.table(rt.sort_values('Room_Revenue', ascending=False).style.format({'RN':'{:,}','Room_Revenue':'{:,}','ADR':'{:,}'}))
 
     st.write("📅 **시점별 세그먼트 분석 (Segment & Month Matrix)**")
-    if 'Month_Label' in data.columns:
-        pivot = data.pivot_table(index='Segment', columns='Month_Label', values='RN', aggfunc='sum', fill_value=0)
-        st.table(pivot)
+    pivot = data.pivot_table(index='Segment', columns='Month_Label', values='RN', aggfunc='sum', fill_value=0)
+    st.table(pivot)
 
     c3, c4 = st.columns(2)
     with c3:
@@ -127,7 +126,7 @@ def render_full_analysis(data, title):
     with c6:
         st.plotly_chart(px.pie(data, values='Room_Revenue', names='Nat_Group', hole=0.4, title=f"{title} 국적 비중"), use_container_width=True)
 
-# 4. 주별/월별 트렌드 전용 모듈
+# 4. 주별/월별 트렌드 모듈
 def render_periodic_trend(data, group_col, label):
     st.markdown(f"### 📈 {label} 실적 트렌드")
     summary = data.groupby(group_col).agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
@@ -142,7 +141,13 @@ def render_periodic_trend(data, group_col, label):
 
 # --- UI 메인 ---
 st.set_page_config(page_title="ARI Extreme Pro Plus", layout="wide")
-st.sidebar.header("🔍 분석 일자 필터")
+st.title("🏨 Amber Revenue Intelligence (ARI)")
+st.sidebar.header("🔍 분석 필터")
+
+# 탭 먼저 정의 (에러 방지)
+tab_up, tab_sum, tab_weekly, tab_monthly, tab_det = st.tabs([
+    "📤 데이터 업로드", "🏛️ 경영진 요약", "📅 주별 분석", "🗓️ 월별 분석", "📈 무삭제 상세 분석"
+])
 
 try:
     c = get_gspread_client()
@@ -154,70 +159,56 @@ try:
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
             db_df[col] = pd.to_numeric(db_df[col], errors='coerce').fillna(0)
         
+        # 사이드바 필터링
         all_dates = sorted(db_df['Snapshot_Date'].unique(), reverse=True)
-        sel_date = st.sidebar.selectbox("Snapshot 날짜 선택", ["전체 누적 데이터"] + all_dates)
+        sel_date = st.sidebar.selectbox("Snapshot 선택", ["전체 누적"] + all_dates)
         
-        filtered_df = db_df if sel_date == "전체 누적 데이터" else db_df[db_df['Snapshot_Date'] == sel_date]
+        filtered_df = db_df if sel_date == "전체 누적" else db_df[db_df['Snapshot_Date'] == sel_date]
         bk = filtered_df[filtered_df['Status'] == 'Booked']
         cn = filtered_df[filtered_df['Status'] == 'Cancelled']
         net_df = pd.concat([bk, cn.assign(RN=-cn['RN'], Room_Revenue=-cn['Room_Revenue'])])
 
-        tab_up, tab_sum, tab_weekly, tab_monthly, tab_det = st.tabs(["📤 데이터 업로드", "🏛️ 경영진 요약 리포트", "📅 주별 분석", "🗓️ 월별 분석", "📈 무삭제 상세 분석"])
-
         with tab_sum:
-            st.header(f"🏛️ 앰버 호텔 경영 요약 ({sel_date})")
-            
-            # [추가] 픽업 분석 (전일 대비)
+            st.header(f"🏛️ 경영진 핵심 요약 ({sel_date})")
+            # Pickup 분석 (전일 대비)
             if len(all_dates) >= 2:
                 latest, prev = all_dates[0], all_dates[1]
                 l_bk = db_df[(db_df['Snapshot_Date']==latest) & (db_df['Status']=='Booked')]
                 p_bk = db_df[(db_df['Snapshot_Date']==prev) & (db_df['Status']=='Booked')]
-                st.subheader(f"⚡ 실시간 픽업 요약 (Vs. {prev})")
+                st.subheader(f"⚡ 실시간 픽업 (Vs. {prev})")
                 m1, m2, m3, m4 = st.columns(4)
-                pick_rn = l_bk['RN'].sum() - p_bk['RN'].sum()
-                pick_rev = l_bk['Room_Revenue'].sum() - p_bk['Room_Revenue'].sum()
-                m1.metric("순증감 (RN)", f"{pick_rn:,.0f} RN", delta=f"{pick_rn:,.0f}")
-                m2.metric("순매출 증감", f"{pick_rev:,.0f} 원", delta=f"{pick_rev:,.0f}")
-                m3.metric("최근 취소 발생", f"{len(db_df[(db_df['Snapshot_Date']==latest) & (db_df['Status']=='Cancelled')])}건", delta_color="inverse")
-                m4.metric("당일 픽업 ADR", f"{pick_rev/pick_rn if pick_rn!=0 else 0:,.0f}원")
-
+                drn = l_bk['RN'].sum() - p_bk['RN'].sum()
+                drev = l_bk['Room_Revenue'].sum() - p_bk['Room_Revenue'].sum()
+                m1.metric("순증감 (RN)", f"{drn:,.0f} RN", delta=f"{drn:,.0f}")
+                m2.metric("매출 증감", f"{drev:,.0f} 원", delta=f"{drev:,.0f}")
+                m3.metric("최근 취소", f"{len(db_df[(db_df['Snapshot_Date']==latest) & (db_df['Status']=='Cancelled')])}건", delta_color="inverse")
+                m4.metric("픽업 ADR", f"{drev/drn if drn!=0 else 0:,.0f}원")
+            
             st.divider()
-            # [추가] 경영진 시각화 차트
-            st.subheader("📊 매출 구성 및 점유 분석")
             c1, c2 = st.columns([2, 1])
             with c1:
                 monthly_perf = bk.groupby('Stay_Month').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
-                fig = px.bar(monthly_perf, x='Stay_Month', y='Room_Revenue', text_auto=',.0f', title="향후 투숙월별 매출 점유")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(px.bar(monthly_perf, x='Stay_Month', y='Room_Revenue', title="향후 투숙월별 매출 점유"), use_container_width=True)
             with c2:
-                fig_seg = px.pie(bk, values='Room_Revenue', names='Segment', hole=0.4, title="채널별 매출 비중")
-                st.plotly_chart(fig_seg, use_container_width=True)
+                st.plotly_chart(px.pie(bk, values='Room_Revenue', names='Segment', hole=0.4, title="채널별 매출 비중"), use_container_width=True)
 
-            st.subheader("🚩 채널별 성적 요약")
-            seg_tab = net_df.groupby('Segment').agg({'RN':'sum', 'Room_Revenue':'sum', 'Lead_Time':'mean'}).reset_index()
-            seg_tab['ADR'] = (seg_tab['Room_Revenue'] / seg_tab['RN']).fillna(0).astype(int)
-            st.table(seg_tab.sort_values('Room_Revenue', ascending=False).style.format({'RN':'{:,}', 'Room_Revenue':'{:,}', 'ADR':'{:,}', 'Lead_Time':'{:.1f}'}))
-
-        with tab_weekly:
-            render_periodic_trend(net_df, 'Stay_YearWeek', '주별(Weekly)')
-        with tab_monthly:
-            render_periodic_trend(net_df, 'Stay_Month', '월별(Monthly)')
+        with tab_weekly: render_periodic_trend(net_df, 'Stay_YearWeek', '주별')
+        with tab_monthly: render_periodic_trend(net_df, 'Stay_Month', '월별')
         with tab_det:
-            st_net, st_bk, st_cn = st.tabs(["🏁 전체 합산(Net)", "✅ 신규 예약(Booked)", "❌ 취소 내역(Cancelled)"])
+            st_net, st_bk, st_cn = st.tabs(["🏁 합산", "✅ 예약", "❌ 취소"])
             with st_net: render_full_analysis(net_df, "합산(Net)")
-            with st_bk: render_full_analysis(bk, "신규 예약(Booked)")
-            with st_cn: render_full_analysis(cn, "취소 내역(Cancelled)")
+            with st_bk: render_full_analysis(bk, "예약(Booked)")
+            with st_cn: render_full_analysis(cn, "취소(Cancelled)")
 
-    else: st.info("데이터를 업로드하세요.")
-except Exception as e: st.error(f"오류: {e}")
-
-with tab_up:
-    m = st.radio("종류", ["신규 예약", "취소 내역"], horizontal=True)
-    status = "Booked" if m == "신규 예약" else "Cancelled"
-    f = st.file_uploader("파일 선택", type=['csv', 'xlsx'])
-    if f:
-        df_p, _ = process_data(f, status)
-        st.dataframe(df_p.head(5))
-        if st.button("DB 저장하기"):
-            sh.get_worksheet(0).append_rows(df_p.fillna('').astype(str).values.tolist())
-            st.success("저장 완료!")
+    with tab_up:
+        m = st.radio("종류", ["신규 예약", "취소 내역"], horizontal=True)
+        status = "Booked" if m == "신규 예약" else "Cancelled"
+        f = st.file_uploader("파일 선택", type=['csv', 'xlsx'])
+        if f:
+            df_p, _ = process_data(f, status)
+            st.dataframe(df_p.head(5))
+            if st.button("DB 저장하기"):
+                sh.get_worksheet(0).append_rows(df_p.fillna('').astype(str).values.tolist())
+                st.success("저장 완료!")
+except Exception as e:
+    st.error(f"오류: {e}")
