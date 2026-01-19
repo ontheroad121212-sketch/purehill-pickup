@@ -13,11 +13,12 @@ from gspread.exceptions import APIError
 # ------------------------------------------------------------------------------
 # 0. 스타일 & 유틸리티
 # ------------------------------------------------------------------------------
-st.set_page_config(page_title="ARI Analysis Pro", layout="wide")
+st.set_page_config(page_title="ARI Final Complete", layout="wide")
 st.markdown("""
 <style>
-    div[data-testid="stMetricValue"] { font-size: 24px !important; font-weight: bold; }
-    button[data-baseweb="tab"] { font-size: 16px !important; font-weight: 600; }
+    div[data-testid="stMetricValue"] { font-size: 24px !important; font-weight: 800; color: #333; }
+    div[data-testid="stMetricLabel"] { font-size: 16px !important; font-weight: 600; }
+    button[data-baseweb="tab"] { font-size: 16px !important; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -103,7 +104,6 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df_raw = pd.read_excel(uploaded_file, header=None)
 
         if is_otb:
-            # [OTB 처리]
             df_raw = find_valid_header_row(df_raw)
             if '일자' in df_raw.columns: 
                 df_raw = df_raw[~df_raw['일자'].astype(str).str.contains('소계|Subtotal|합계|Total', na=False)]
@@ -132,7 +132,6 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df['Lead_Time'] = 0
             
         else:
-            # [리스트 처리]
             df_raw = find_valid_header_row(df_raw)
             df_raw = df_raw[~df_raw.iloc[:, 0].astype(str).str.contains('합계|Total|소계|Subtotal', case=False, na=False)]
             
@@ -162,7 +161,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Snapshot_Date'] = datetime.now().strftime('%Y-%m-%d')
         df['Status'] = status
         
-        # [리드타임 강제 계산용 날짜 파싱]
+        # 날짜 파싱 & 리드타임 강제 계산
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
@@ -177,7 +176,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Weekday_Num'] = df['CheckIn_dt'].dt.weekday
         df['Day_Type'] = df['Weekday_Num'].apply(lambda x: 'Weekend' if x >= 4 else 'Weekday')
 
-        # [리드타임 강제 계산] (지배인님 요청: 파일 값 무시하고 계산)
+        # 리드타임 강제 계산 (입실 - 예약)
         df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
         df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
         
@@ -213,7 +212,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
         return pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 3. 공통 분석 모듈 (세그먼트 월별 상세 + 페이싱 ADR 추가)
+# 3. 공통 분석 모듈 (세그먼트 월별 + 페이싱 ADR + KEY 중복 방지)
 # ------------------------------------------------------------------------------
 def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
     if target_df.empty:
@@ -226,51 +225,47 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
         "⏳ 리드타임", "🛏️ 객실타입", "🗓️ 요일별"
     ])
     
-    # 1. 세그먼트 (월별 상세 추가)
+    # 1. 세그먼트 (월별 상세 추가됨!)
     with t1:
-        st.subheader(f"📊 {title_prefix} 세그먼트 분석")
+        st.subheader(f"📊 {title_prefix} 세그먼트 상세")
+        
+        # 상단 요약
         seg_stats = target_df.groupby('Segment').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
         seg_stats['ADR'] = (seg_stats['Room_Revenue'] / seg_stats['RN']).fillna(0)
         
         c1, c2 = st.columns(2)
-        c1.plotly_chart(px.pie(seg_stats, values='Room_Revenue', names='Segment', title="매출 비중"), use_container_width=True, key=f"{title_prefix}_seg_pie")
-        c2.plotly_chart(px.bar(seg_stats, x='Segment', y='ADR', title="전체 ADR 비교", text_auto=',.0f', color='Segment'), use_container_width=True, key=f"{title_prefix}_seg_bar")
+        c1.plotly_chart(px.pie(seg_stats, values='Room_Revenue', names='Segment', title="세그먼트별 매출 비중"), use_container_width=True, key=f"{title_prefix}_seg_pie")
+        c2.plotly_chart(px.bar(seg_stats, x='Segment', y='ADR', title="세그먼트별 ADR 비교", text_auto=',.0f', color='Segment'), use_container_width=True, key=f"{title_prefix}_seg_bar")
         
         st.divider()
-        st.write("📅 **세그먼트별 x 월별 상세 실적 (RN / ADR / 매출)**")
-        
-        # [NEW] 세그먼트별 월별 상세 테이블
+        st.markdown("##### 📅 세그먼트 x 월별 상세 실적 (요청하신 기능 복구)")
+        # [복구] 세그먼트 월별 상세 테이블
         seg_monthly = target_df.groupby(['Segment', 'Stay_Month']).agg({
             'RN': 'sum', 
             'Room_Revenue': 'sum'
         }).reset_index()
         seg_monthly['ADR'] = (seg_monthly['Room_Revenue'] / seg_monthly['RN']).fillna(0)
-        
-        # 정렬: 월별 -> 세그먼트
         seg_monthly = seg_monthly.sort_values(['Stay_Month', 'Segment'])
         
-        st.dataframe(seg_monthly,
+        st.dataframe(seg_monthly, 
                      column_config={
                          "Stay_Month": st.column_config.TextColumn("월"),
                          "Segment": st.column_config.TextColumn("세그먼트"),
-                         "RN": st.column_config.NumberColumn("RN", format="%d"),
+                         "Room_Revenue": st.column_config.NumberColumn("매출액", format="%d원"),
                          "ADR": st.column_config.NumberColumn("ADR", format="%d원"),
-                         "Room_Revenue": st.column_config.NumberColumn("매출액", format="%d원")
-                     },
-                     hide_index=True, use_container_width=True)
+                         "RN": st.column_config.NumberColumn("RN", format="%d")
+                     }, hide_index=True, use_container_width=True)
 
-    # 2. Pacing (ADR 추가)
+    # 2. Pacing (ADR 옵션 추가됨!)
     with t2:
         st.subheader(f"📅 {title_prefix} Pacing (예약월 vs 입실월)")
         
-        # [NEW] ADR 옵션 추가
-        pivot_metric = st.radio("분석 기준 선택", ["객실수 (RN)", "객실매출", "객실단가 (ADR)"], horizontal=True, key=f"{title_prefix}_pacing_radio")
+        # [복구] ADR 라디오 버튼
+        pivot_metric = st.radio("분석 기준", ["객실수 (RN)", "객실매출", "객실단가 (ADR)"], horizontal=True, key=f"{title_prefix}_pacing_radio")
         
         if "ADR" in pivot_metric:
-            # ADR 히트맵 (Revenue Sum / RN Sum)
             rev_piv = target_df.pivot_table(index='Booking_Month', columns='Stay_Month', values='Room_Revenue', aggfunc='sum', fill_value=0)
             rn_piv = target_df.pivot_table(index='Booking_Month', columns='Stay_Month', values='RN', aggfunc='sum', fill_value=0)
-            # 0으로 나누기 방지
             pacing = rev_piv.div(rn_piv).fillna(0)
             fmt = ".0f"
         elif "RN" in pivot_metric:
@@ -280,7 +275,7 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
             pacing = target_df.pivot_table(index='Booking_Month', columns='Stay_Month', values='Room_Revenue', aggfunc='sum', fill_value=0)
             fmt = ".2s"
 
-        fig = px.imshow(pacing, text_auto=fmt, aspect="auto", color_continuous_scale=color_scale, title=f"{pivot_metric} Heatmap")
+        fig = px.imshow(pacing, text_auto=fmt, aspect="auto", color_continuous_scale=color_scale, title=f"Booking Pattern ({pivot_metric})")
         st.plotly_chart(fig, use_container_width=True, key=f"{title_prefix}_pacing")
 
     # 3. 거래처
@@ -346,9 +341,8 @@ try:
     except:
         budget_df = pd.DataFrame(columns=['Month', 'Budget'])
 
-    st.title("🏛️ 앰버 호텔 경영 리포트 (Analysis Pro)")
+    st.title("🏛️ 앰버 호텔 경영 리포트 (GM Perfect Edition)")
 
-    # 초기화
     with st.sidebar.expander("🛠️ 데이터 관리", expanded=True):
         if st.button("🗑️ 전체 데이터 삭제 (필수)"):
             db_sheet.clear()
@@ -403,14 +397,12 @@ try:
                 time.sleep(2)
                 st.rerun()
 
-    # 데이터 로드
     raw_data = load_data_from_sheet(db_sheet)
     if len(raw_data) <= 1:
         st.warning("⚠️ 데이터가 없습니다. 파일을 업로드해주세요.")
     else:
         df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
         
-        # 수치 변환
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -420,108 +412,62 @@ try:
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
-        # [리드타임 강제 계산]
         df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
         df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
         
         df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
-        df['Stay_Month'] = df['CheckIn_dt'].dt.strftime('%Y-%m')
-        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m')
+        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m') # 필터링용
         
-        all_snapshots = sorted(df['Snapshot_Date'].unique(), reverse=True)
-        sel_snapshot = st.sidebar.selectbox("기준일(Snapshot)", ["전체 누적"] + all_snapshots)
-        
-        if sel_snapshot != "전체 누적":
-            df = df[df['Snapshot_Date'] <= sel_snapshot]
-            
         df_otb_m = df[df['Segment'] == 'OTB_Month']
         df_otb_t = df[df['Segment'] == 'OTB_Total']
         
         df_list = df[~df['Segment'].str.contains('OTB')]
-        
-        # [유료 예약 / 취소 / 0원 격리]
         df_paid_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == False)]
         df_zero_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == True)]
         df_list_cn = df_list[df_list['Status'] == 'Cancelled']
-        df_total_paid = pd.concat([df_paid_bk, df_list_cn]) 
+        df_total_paid = pd.concat([df_paid_bk, df_list_cn])
 
         curr_month = datetime.now().strftime('%Y-%m')
 
-        # [영역 1] OTB 버짓
-        st.markdown("### 🎯 세일즈 온더북 버짓 달성현황 (Source: OTB File)")
-        
-        if not df_otb_m.empty:
-            m_rev = df_otb_m['Room_Revenue'].sum()
-            m_trev = df_otb_m['Total_Revenue'].sum()
-            m_rn = df_otb_m['RN'].sum()
-            m_adr = (m_rev / m_rn) if m_rn > 0 else 0
-        else:
-            m_rev = 0; m_trev = 0; m_rn = 0; m_adr = 0
-            
-        m_budget = budget_df[budget_df['Month'] == curr_month]['Budget'].sum()
-        m_achieve = (m_rev / m_budget * 100) if m_budget > 0 else 0
-
-        if not df_otb_t.empty:
-            t_rev = df_otb_t['Room_Revenue'].sum()
-            t_trev = df_otb_t['Total_Revenue'].sum()
-            t_rn = df_otb_t['RN'].sum()
-            t_adr = (t_rev / t_rn) if t_rn > 0 else 0
-        else:
-            t_rev = 0; t_trev = 0; t_rn = 0; t_adr = 0
-            
-        t_budget = budget_df['Budget'].sum()
-        t_achieve = (t_rev / t_budget * 100) if t_budget > 0 else 0
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.info(f"📅 {curr_month} 당월 (객실매출 기준)")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("달성률", f"{m_achieve:.1f}%")
-            col2.metric("객실매출", f"{m_rev:,.0f}")
-            col3.metric("총매출", f"{m_trev:,.0f}")
-            col4.metric("ADR / RN", f"{m_adr:,.0f} / {m_rn:,.0f}")
-            st.caption(f"목표: {m_budget:,.0f}원")
-
-        with c2:
-            st.success("🌍 전체 누적 (객실매출 기준)")
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("달성률", f"{t_achieve:.1f}%")
-            k2.metric("객실매출", f"{t_rev:,.0f}")
-            k3.metric("총매출", f"{t_trev:,.0f}")
-            k4.metric("ADR / RN", f"{t_adr:,.0f} / {t_rn:,.0f}")
-            st.caption(f"목표: {t_budget:,.0f}원")
-
-        st.divider()
-
-        # [영역 2] 상세 인사이트
-        st.markdown("### 📊 예약/취소 상세 인사이트 (Source: List File)")
-        
-        main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs([
-            "✅ 예약 상세 분석", 
-            "❌ 취소 상세 분석", 
-            "📈 종합 합계 분석",
-            "🆓 0원 예약(격리)"
+        # [NEW] GM 요약 탭
+        main_tab0, main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs([
+            "👑 총지배인(GM) 요약", "✅ 예약 상세", "❌ 취소 상세", "📈 종합 합계", "🆓 0원 예약"
         ])
-        
+
+        with main_tab0:
+            st.header("👑 Executive Summary")
+            
+            # 1. 예약 유입 속도 (최근 생성일 기준)
+            st.subheader("🚀 최근 예약 유입 속도 (Booking Velocity)")
+            if not df_paid_bk.empty:
+                recent_bk = df_paid_bk.groupby('Booking_Month').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
+                recent_bk = recent_bk.sort_values('Booking_Month').tail(12) # 최근 12개월
+                
+                c1, c2 = st.columns(2)
+                c1.plotly_chart(px.line(recent_bk, x='Booking_Month', y='RN', title="월별 예약 생성량 (RN)", markers=True), use_container_width=True)
+                c2.plotly_chart(px.bar(recent_bk, x='Booking_Month', y='Room_Revenue', title="월별 예약 생성액 (매출)", text_auto='.2s'), use_container_width=True)
+            else:
+                st.info("예약 데이터가 없습니다.")
+
+            st.divider()
+            
+            # 2. Top 5 거래처
+            st.subheader("🏆 Top 5 효자 거래처")
+            if not df_paid_bk.empty:
+                top_acc = df_paid_bk.groupby('Account').agg({'Room_Revenue':'sum', 'RN':'sum'}).reset_index()
+                top_acc['ADR'] = top_acc['Room_Revenue'] / top_acc['RN']
+                top_acc = top_acc.sort_values('Room_Revenue', ascending=False).head(5)
+                st.dataframe(top_acc, column_config={"Room_Revenue": st.column_config.NumberColumn("매출", format="%d원"), "ADR": st.column_config.NumberColumn(format="%d원")}, use_container_width=True, hide_index=True)
+
         with main_tab1:
-            st.caption("※ 0원(무료) 예약은 제외된 '유료 예약' 기준 분석입니다.")
             render_rich_analysis(df_paid_bk, "유료 예약", "Blues")
         
         with main_tab2:
-            st.caption("※ 취소된 예약에 대한 분석입니다.")
             render_rich_analysis(df_list_cn, "취소 데이터", "Reds")
-        
+            
         with main_tab3:
-            st.caption("※ 예약 + 취소 데이터를 합친 전체 트래픽 분석입니다.")
             render_rich_analysis(df_total_paid, "종합(예약+취소)", "Greens")
             
-            st.divider()
-            st.subheader("📝 단순 합계 요약")
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("총 예약 건수", f"{len(df_paid_bk):,} 건")
-            mc2.metric("총 취소 건수", f"{len(df_list_cn):,} 건")
-            mc3.metric("취소율(건수 기준)", f"{(len(df_list_cn) / (len(df_paid_bk)+len(df_list_cn)+0.0001)*100):.1f}%")
-
         with main_tab4:
             st.write(f"총 {len(df_zero_bk)}건")
             st.dataframe(df_zero_bk[['Guest_Name', 'CheckIn', 'Account', 'Room_Type']], use_container_width=True)
