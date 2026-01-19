@@ -43,7 +43,7 @@ def process_data(uploaded_file, status):
     for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # [핵심] 총금액 0원 예약 판별
+    # [핵심] 총금액 0원 예약 판별 (체험단, VIP 등)
     df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
     df['RN'] = df['Rooms'] * df['Nights']
     
@@ -87,7 +87,7 @@ def process_data(uploaded_file, status):
     final_cols = ['Guest_Name', 'CheckIn', 'Booking_Date', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Nat_Group', 'Status', 'Stay_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Month_Label', 'Is_Zero_Rate']
     return df[final_cols], today_str
 
-# 3. 무삭제 상세 분석 렌더링 (에러 원천 차단 가드 적용)
+# 3. 무삭제 상세 분석 렌더링 (천 단위 콤마 & 정수 가드 적용)
 def render_full_analysis(data, title):
     if data is None or data.empty:
         st.info(f"조회된 {title} 데이터가 없습니다.")
@@ -133,16 +133,17 @@ st.set_page_config(page_title="ARI Extreme Pro Dashboard", layout="wide")
 try:
     c = get_gspread_client()
     sh = c.open("Amber_Revenue_DB")
-    raw = sh.get_worksheet(0).get_all_values()
     
-    # [A방식] Budget 연동
+    # [A방식] Budget 시트 연동 로직 (필수 설정 사항)
     try:
-        budget_raw = sh.worksheet("Budget").get_all_values()
+        budget_sheet = sh.worksheet("Budget")
+        budget_raw = budget_sheet.get_all_values()
         budget_df = pd.DataFrame(budget_raw[1:], columns=budget_raw[0])
         budget_df['Budget'] = pd.to_numeric(budget_df['Budget'], errors='coerce').fillna(0)
     except:
         budget_df = pd.DataFrame(columns=['Month', 'Budget'])
 
+    raw = sh.get_worksheet(0).get_all_values()
     if len(raw) > 1:
         db_df = pd.DataFrame(raw[1:], columns=raw[0])
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
@@ -161,6 +162,8 @@ try:
 
         # --- [최상단] 유료 실적 8대 KPI ---
         st.header(f"🏛️ 앰버 호텔 경영 요약 리포트 ({sel_date})")
+        st.info("💡 체험단, VIP 등 총금액이 0원인 예약은 매출 지표에서 제외되었습니다.")
+        
         k1, k2, k3, k4 = st.columns(4)
         k5, k6, k7, k8 = st.columns(4)
         
@@ -178,7 +181,7 @@ try:
         
         st.divider()
 
-        # 월별 상세 테이블 (천 단위 콤마 & 소수점 제거)
+        # 월별 상세 테이블 (Budget 연동 + 천 단위 콤마)
         st.subheader("📅 월별 유료 실적 및 목표 달성률")
         m_bk = bk.groupby('Stay_Month').agg({'RN':'sum', 'Total_Revenue':'sum', 'Room_Revenue':'sum'}).reset_index()
         m_bk['ADR'] = (m_bk['Room_Revenue'] / m_bk['RN']).replace([float('inf')], 0).fillna(0).astype(int)
