@@ -13,7 +13,7 @@ from gspread.exceptions import APIError
 # ------------------------------------------------------------------------------
 # 0. 스타일 & 유틸리티
 # ------------------------------------------------------------------------------
-st.set_page_config(page_title="ARI Final UI", layout="wide")
+st.set_page_config(page_title="ARI Literal Master", layout="wide")
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px !important; font-weight: bold; }
@@ -49,7 +49,7 @@ def load_data_from_sheet(_sheet_obj):
     return []
 
 # ------------------------------------------------------------------------------
-# 2. 데이터 처리 엔진 (리드타임 강제 계산 로직 강화)
+# 2. 데이터 처리 엔진 (계산 로직 삭제 -> 읽기 전용)
 # ------------------------------------------------------------------------------
 def normalize_and_map_columns(df):
     col_map = {}
@@ -64,7 +64,9 @@ def normalize_and_map_columns(df):
         'Segment': ['segment', '세그먼트'],
         'Account': ['account', 'source', 'agent', '거래처', '에이전시'],
         'Room_Type': ['type', 'cat', '객실타입', '룸타입'],
-        'Nat_Orig': ['nation', 'country', 'nat', '국적']
+        'Nat_Orig': ['nation', 'country', 'nat', '국적'],
+        # [중요] 리드타임 컬럼 매핑 강화
+        'Lead_Time': ['lead', '리드', 'lt', 'l/t'] 
     }
 
     for original_col in df.columns:
@@ -143,13 +145,14 @@ def process_data(uploaded_file, status, sub_segment="General"):
             if 'CheckIn' not in df.columns: return pd.DataFrame()
             if 'Booking_Date' not in df.columns: df['Booking_Date'] = df['CheckIn']
             
-            req_cols = ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Guest_Name', 'Segment', 'Account', 'Room_Type', 'Nat_Orig']
+            # Lead_Time이 없으면 0으로 채우고, 있으면 그대로 둠
+            req_cols = ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Guest_Name', 'Segment', 'Account', 'Room_Type', 'Nat_Orig', 'Lead_Time']
             for c in req_cols:
                 if c not in df.columns: 
-                    if c in ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue']: df[c] = 0 
+                    if c in ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Lead_Time']: df[c] = 0 
                     else: df[c] = 'Unknown'
 
-            for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
+            for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights', 'Lead_Time']:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
             df['Total_Revenue'] = np.where(df['Total_Revenue'] == 0, df['Room_Revenue'], df['Total_Revenue'])
@@ -162,10 +165,8 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Snapshot_Date'] = datetime.now().strftime('%Y-%m-%d')
         df['Status'] = status
         
-        # 날짜 파싱 & 리드타임 강제 계산
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
-        # Booking Date 없으면 CheckIn으로
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
         df = df.dropna(subset=['CheckIn_dt'])
@@ -178,10 +179,9 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Weekday_Num'] = df['CheckIn_dt'].dt.weekday
         df['Day_Type'] = df['Weekday_Num'].apply(lambda x: 'Weekend' if x >= 4 else 'Weekday')
 
-        # [리드타임 강제 주입]
-        # 파일에 0이 있든 말든 무조건 (CheckIn - Booking)으로 덮어씀
-        df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
-        df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
+        # [지배인님 지시사항] 리드타임 계산 로직 완전 삭제 -> 파일 값 그대로 사용
+        # 단, 만약에 파일에 리드타임이 없어서 0으로 들어온 경우에도 그대로 0으로 둠 (지배인님이 넣는다고 하셨으므로)
+        df['Lead_Time'] = df['Lead_Time'].fillna(0).astype(int)
         
         def classify_nat(row):
             name = str(row.get('Guest_Name', ''))
@@ -215,24 +215,19 @@ def process_data(uploaded_file, status, sub_segment="General"):
         return pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 3. [핵심] 공통 분석 모듈 (무조건 렌더링)
+# 3. 공통 분석 모듈
 # ------------------------------------------------------------------------------
 def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
-    # 데이터가 없어도 탭 구조는 보여줌 (사용자 혼란 방지)
+    if target_df.empty:
+        st.warning(f"⚠️ {title_prefix} 데이터가 없습니다.")
+        return
+
+    # 탭 구성: 세그먼트, 패턴, 거래처, 리드타임, 객실타입, 요일
     t1, t2, t3, t4, t5, t6 = st.tabs([
         "📊 세그먼트", "📅 예약패턴(Pacing)", "🏢 거래처", 
         "⏳ 리드타임", "🛏️ 객실타입", "🗓️ 요일별"
     ])
     
-    if target_df.empty:
-        with t1: st.info("데이터가 없습니다.")
-        with t2: st.info("데이터가 없습니다.")
-        with t3: st.info("데이터가 없습니다.")
-        with t4: st.info("데이터가 없습니다.")
-        with t5: st.info("데이터가 없습니다.")
-        with t6: st.info("데이터가 없습니다.")
-        return
-
     # 1. 세그먼트
     with t1:
         st.subheader(f"📊 {title_prefix} 세그먼트 분석")
@@ -266,9 +261,9 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
                      column_config={"Room_Revenue": st.column_config.NumberColumn(format="%d원"), "ADR": st.column_config.NumberColumn(format="%d원")}, 
                      hide_index=True, use_container_width=True)
 
-    # 4. 리드타임
+    # 4. 리드타임 (값 그대로 사용)
     with t4:
-        st.subheader(f"⏳ {title_prefix} 리드타임 분석")
+        st.subheader(f"⏳ {title_prefix} 리드타임 분석 (파일 원본 값)")
         bins = [-1, 0, 3, 7, 14, 30, 60, 90, 999]
         labels = ['당일', '1-3일', '4-7일', '8-14일', '15-30일', '31-60일', '61-90일', '90일+']
         temp_df = target_df.copy()
@@ -317,9 +312,9 @@ try:
     except:
         budget_df = pd.DataFrame(columns=['Month', 'Budget'])
 
-    st.title("🏛️ 앰버 호텔 경영 리포트 (ARI Extreme UI)")
+    st.title("🏛️ 앰버 호텔 경영 리포트 (Final System)")
 
-    # 초기화 및 업로드
+    # 초기화
     with st.sidebar.expander("🛠️ 데이터 관리", expanded=True):
         if st.button("🗑️ 전체 데이터 삭제 (필수)"):
             db_sheet.clear()
@@ -333,7 +328,7 @@ try:
     st.sidebar.header("📤 데이터 업로드")
     
     with st.sidebar.expander("📝 상세 리스트", expanded=False):
-        f1 = st.file_uploader("신규 예약", type=['xlsx','csv'], key="f1")
+        f1 = st.file_uploader("신규 예약 리스트", type=['xlsx','csv'], key="f1")
         if f1 and st.button("신규 예약 반영"):
             df = process_data(f1, "Booked")
             if not df.empty:
@@ -381,23 +376,23 @@ try:
     else:
         df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
         
-        # 수치 변환 및 자가 복구
+        # 수치 변환
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
+        # [데이터 정리]
         if 'Booking_Date' not in df.columns: df['Booking_Date'] = df['CheckIn']
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
-        # [리드타임 강제 계산]
-        df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
-        df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
+        # 리드타임: 계산 안함. 파일에 있는 값 그대로 사용 (없으면 0)
+        df['Lead_Time'] = df['Lead_Time'].astype(int)
         
+        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m')
         df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
         df['Stay_Month'] = df['CheckIn_dt'].dt.strftime('%Y-%m')
-        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m')
         
         all_snapshots = sorted(df['Snapshot_Date'].unique(), reverse=True)
         sel_snapshot = st.sidebar.selectbox("기준일(Snapshot)", ["전체 누적"] + all_snapshots)
@@ -410,10 +405,11 @@ try:
         
         df_list = df[~df['Segment'].str.contains('OTB')]
         
+        # [유료 예약 / 취소 / 0원 격리]
         df_paid_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == False)]
         df_zero_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == True)]
         df_list_cn = df_list[df_list['Status'] == 'Cancelled']
-        df_total_paid = pd.concat([df_paid_bk, df_list_cn]) # 합계용 (유료예약 + 취소)
+        df_total_paid = pd.concat([df_paid_bk, df_list_cn]) # 합계(유료예약+취소)
 
         curr_month = datetime.now().strftime('%Y-%m')
 
@@ -463,7 +459,7 @@ try:
 
         st.divider()
 
-        # [영역 2] 상세 인사이트 (탭 구성)
+        # [영역 2] 상세 인사이트
         st.markdown("### 📊 예약/취소 상세 인사이트 (Source: List File)")
         
         main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs([
@@ -476,11 +472,11 @@ try:
         with main_tab1:
             st.caption("※ 0원(무료) 예약은 제외된 '유료 예약' 기준 분석입니다.")
             render_rich_analysis(df_paid_bk, "유료 예약", "Blues")
-        
+            
         with main_tab2:
             st.caption("※ 취소된 예약에 대한 분석입니다.")
             render_rich_analysis(df_list_cn, "취소 데이터", "Reds")
-        
+            
         with main_tab3:
             st.caption("※ 예약 + 취소 데이터를 합친 전체 트래픽 분석입니다.")
             render_rich_analysis(df_total_paid, "종합(예약+취소)", "Greens")
