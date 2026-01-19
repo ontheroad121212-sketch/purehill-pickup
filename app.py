@@ -5,8 +5,9 @@ from google.oauth2.service_account import Credentials
 import re
 from datetime import datetime
 import plotly.express as px
+import numpy as np
 
-# 1. 구글 시트 연결 (인증 로직 전체 유지)
+# 1. 구글 시트 연결 (인증 정보 전체 유지)
 def get_gspread_client():
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -17,7 +18,7 @@ def get_gspread_client():
         st.error(f"❌ 인증 오류: {e}")
         return None
 
-# 2. 데이터 처리 엔진 (0원 예약 판별 및 18개 컬럼 무삭제)
+# 2. 데이터 처리 엔진 (0원 예약 판별 및 18개 컬럼 무삭제 유지)
 def process_data(uploaded_file, status):
     if uploaded_file.name.endswith('.csv'):
         df_raw = pd.read_csv(uploaded_file, skiprows=1)
@@ -39,7 +40,7 @@ def process_data(uploaded_file, status):
     existing_cols = [c for c in col_map.keys() if c in df_raw.columns]
     df = df_raw[existing_cols].rename(columns=col_map).copy()
     
-    # 수치형 변환 및 결측치 0 채우기
+    # 수치형 변환 (에러 방어 1단계)
     for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
@@ -47,8 +48,9 @@ def process_data(uploaded_file, status):
     df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
     df['RN'] = df['Rooms'] * df['Nights']
     
-    # [에러 방어 1] ADR 0 나누기 방지
+    # [에러 방어 2단계] ADR 계산 시 0 나누기 및 무한대 처리
     df['ADR'] = df.apply(lambda x: x['Room_Revenue'] / x['RN'] if x['RN'] > 0 else 0, axis=1)
+    df['ADR'] = df['ADR'].replace([np.inf, -np.inf], 0).fillna(0)
     
     for col in ['CheckIn', 'Booking_Date']:
         df[col] = pd.to_datetime(df[col], errors='coerce')
@@ -87,41 +89,46 @@ def process_data(uploaded_file, status):
     final_cols = ['Guest_Name', 'CheckIn', 'Booking_Date', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Nat_Group', 'Status', 'Stay_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Month_Label', 'Is_Zero_Rate']
     return df[final_cols], today_str
 
-# 3. 무삭제 상세 분석 렌더링 (포맷팅 적용)
+# 3. 무삭제 상세 분석 렌더링 (강력한 정수 변환 가드)
 def render_full_analysis(data, title):
     if data is None or data.empty:
-        st.info(f"조회된 {title} 데이터가 없습니다.")
+        st.info(f"📍 {title} 데이터가 없습니다.")
         return
     st.markdown(f"#### 📊 {title} 무삭제 상세 분석 리포트")
     c1, c2 = st.columns(2)
     with c1:
         st.write("**🏢 거래처별 실적 (RN, 매출, ADR)**")
         acc = data.groupby('Account').agg({'RN':'sum','Room_Revenue':'sum'}).reset_index()
-        acc['ADR'] = (acc['Room_Revenue'] / acc['RN']).replace([float('inf'), -float('inf')], 0).fillna(0).astype(int)
+        # [에러 방어 3단계] 모든 변환 지점에 replace-fillna-astype(int) 콤보 적용
+        acc['ADR'] = (acc['Room_Revenue'] / acc['RN']).replace([np.inf, -np.inf], 0).fillna(0).astype(int)
         st.table(acc.sort_values('Room_Revenue', ascending=False).style.format({'RN':'{:,}','Room_Revenue':'{:,}','ADR':'{:,}'}))
     with c2:
         st.write("**🛏️ 객실 타입별 실적**")
         rt = data.groupby('Room_Type').agg({'RN':'sum','Room_Revenue':'sum'}).reset_index()
-        rt['ADR'] = (rt['Room_Revenue'] / rt['RN']).replace([float('inf'), -float('inf')], 0).fillna(0).astype(int)
+        rt['ADR'] = (rt['Room_Revenue'] / rt['RN']).replace([np.inf, -np.inf], 0).fillna(0).astype(int)
         st.table(rt.sort_values('Room_Revenue', ascending=False).style.format({'RN':'{:,}','Room_Revenue':'{:,}','ADR':'{:,}'}))
 
     st.write("**📅 시점 매트릭스 (Segment x Month_Label)**")
     pivot = data.pivot_table(index='Segment', columns='Month_Label', values='RN', aggfunc='sum', fill_value=0)
     st.table(pivot)
 
-# 4. 주기별 트렌드
+# 4. 주기별 트렌드 (무삭제 전체 로직)
 def render_periodic_trend(data, group_col, label):
-    if data is None or data.empty: return
+    if data is None or data.empty:
+        st.warning(f"⚠️ {label} 분석 데이터가 없습니다.")
+        return
+    st.markdown(f"### 📈 {label} 실적 트렌드")
     summary = data.groupby(group_col).agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
-    summary['ADR'] = (summary['Room_Revenue'] / summary['RN']).replace([float('inf')], 0).fillna(0).astype(int)
+    summary['ADR'] = (summary['Room_Revenue'] / summary['RN']).replace([np.inf, -np.inf], 0).fillna(0).astype(int)
+    
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.plotly_chart(px.line(summary, x=group_col, y='Room_Revenue', markers=True, title=f"{label} 트렌드"), use_container_width=True)
+        st.plotly_chart(px.line(summary, x=group_col, y='Room_Revenue', markers=True, title=f"{label} 매출 추이"), use_container_width=True)
     with col2:
         st.table(summary.sort_values(group_col).style.format({'RN':'{:,}', 'Room_Revenue':'{:,}', 'ADR':'{:,}'}))
 
 # --- UI 메인 ---
-st.set_page_config(page_title="ARI Executive Dashboard", layout="wide")
+st.set_page_config(page_title="ARI Extreme Pro Dashboard", layout="wide")
 
 try:
     c = get_gspread_client()
@@ -151,34 +158,35 @@ try:
         bk = paid_df[paid_df['Status'] == 'Booked']
         cn = filtered_df[filtered_df['Status'] == 'Cancelled']
 
-        # --- [최상단] 실시간 세일즈온더북 vs 버짓 달성 대시보드 ---
+        # --- [최상단] 실시간 OTB vs 버짓 실시간 대시보드 ---
         st.header(f"🏛️ 앰버 호텔 경영 요약 리포트 ({sel_date})")
         
-        b_rn, b_rev, b_room = bk['RN'].sum(), bk['Total_Revenue'].sum(), bk['Room_Revenue'].sum()
+        total_booked_rev = bk['Room_Revenue'].sum()
         total_budget = budget_df['Budget'].sum()
-        total_adr = (b_room / b_rn) if b_rn > 0 else 0
-        total_achievement = (b_room / total_budget * 100) if total_budget > 0 else 0
+        total_rn = bk['RN'].sum()
+        total_adr = (total_booked_rev / total_rn) if total_rn > 0 else 0
+        total_achievement = (total_booked_rev / total_budget * 100) if total_budget > 0 else 0
         
         st.subheader("🎯 실시간 목표 달성 현황 (Budget vs OTB)")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("🚩 버짓 달성률", f"{total_achievement:.1f} %", delta=f"목표: {total_budget:,.0f}원")
-        m2.metric("🏠 총 유료 객실매출", f"{b_room:,.0f} 원")
-        m3.metric("💰 총 유료 전체매출", f"{b_rev:,.0f} 원")
+        m1.metric("🚩 버짓 달성률", f"{total_achievement:.1f} %", delta=f"Budget: {total_budget:,.0f}")
+        m2.metric("🏠 유료 객실매출", f"{total_booked_rev:,.0f} 원")
+        m3.metric("💰 유료 전체매출", f"{bk['Total_Revenue'].sum():,.0f} 원")
         m4.metric("📈 유료 예약 ADR", f"{total_adr:,.0f} 원")
 
         st.divider()
 
-        # 월별 상세 달성률 테이블
-        st.subheader("📅 월별 유료 실적 및 목표 달성 상세")
+        # 월별 상세 테이블 (천 단위 콤마 & 버짓 연동)
+        st.subheader("📅 월별 유료 실적 및 달성률 상세")
         m_bk = bk.groupby('Stay_Month').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
         m_total = pd.merge(m_bk, budget_df, left_on='Stay_Month', right_on='Month', how='left').fillna(0)
-        m_total['달성률(%)'] = (m_total['Room_Revenue'] / m_total['Budget'] * 100).replace([float('inf')], 0).fillna(0).round(1)
+        m_total['달성률(%)'] = (m_total['Room_Revenue'] / m_total['Budget'] * 100).replace([np.inf, -np.inf], 0).fillna(0).round(1)
 
         st.table(m_total[['Stay_Month', 'RN', 'Room_Revenue', 'Budget', '달성률(%)']].style.format({
             'RN':'{:,}', 'Room_Revenue':'{:,}', 'Budget':'{:,}', '달성률(%)':'{}%'
         }))
 
-        # 탭 구성 (무삭제)
+        # 탭 구성 (무삭제 전체 로직)
         tab_weekly, tab_monthly, tab_det, tab_zero, tab_up = st.tabs([
             "📅 주별 분석", "🗓️ 월별 분석", "📈 무삭제 상세 분석", "🆓 0원 예약 목록", "📤 OTB 업데이트"
         ])
@@ -198,17 +206,20 @@ try:
         with tab_zero:
             st.subheader("🆓 0원 예약 목록 (체험단/VIP 등)")
             zero_booked = filtered_df[(filtered_df['Is_Zero_Rate'] == True) & (filtered_df['Status'] == 'Booked')]
-            st.dataframe(zero_booked[['Guest_Name', 'CheckIn', 'RN', 'Account', 'Room_Type']].style.format({'RN':'{:,}'}), use_container_width=True)
+            if not zero_booked.empty:
+                st.dataframe(zero_booked[['Guest_Name', 'CheckIn', 'RN', 'Account', 'Room_Type']].style.format({'RN':'{:,}'}), use_container_width=True)
+            else:
+                st.write("해당 조건의 0원 예약이 없습니다.")
 
         with tab_up:
             st.subheader("📤 세일즈온더북(OTB) 신규 업로드")
-            m = st.radio("업로드 종류", ["신규 예약", "취소 내역"], horizontal=True)
+            m = st.radio("종류", ["신규 예약", "취소 내역"], horizontal=True)
             status = "Booked" if m == "신규 예약" else "Cancelled"
-            f = st.file_uploader("엑셀/CSV 파일 선택", type=['csv', 'xlsx'])
-            if f and st.button("데이터베이스 업데이트"):
+            f = st.file_uploader("파일 선택", type=['csv', 'xlsx'])
+            if f and st.button("DB 업데이트"):
                 df_p, _ = process_data(f, status)
                 sh.get_worksheet(0).append_rows(df_p.fillna('').astype(str).values.tolist())
-                st.success("✅ 업데이트 완료! 대시보드에서 달성률을 확인하세요.")
+                st.success("✅ OTB 데이터 반영 완료! 상단 대시보드를 확인하세요.")
 
 except Exception as e:
-    st.error(f"🚨 시스템 오류: {e}")
+    st.error(f"🚨 시스템 오류 발생: {e}")
