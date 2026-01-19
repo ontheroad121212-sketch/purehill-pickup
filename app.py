@@ -31,7 +31,7 @@ def process_data(uploaded_file):
     df_raw = df_raw[df_raw['고객명'].notna()]
     df_raw = df_raw[~df_raw['고객명'].astype(str).str.contains('합계|Total|소계|합 계', na=False)]
     
-    # 컬럼 매핑 (거래처 추가)
+    # 컬럼 매핑
     col_map = {
         '고객명': 'Guest_Name', 
         '입실일자': 'CheckIn', 
@@ -41,7 +41,7 @@ def process_data(uploaded_file):
         '객실료': 'Room_Revenue',
         '총금액': 'Total_Revenue',
         '시장': 'Segment', 
-        '거래처': 'Account', # 어카운트 추가
+        '거래처': 'Account',
         '객실타입': 'Room_Type',
         '국적': 'Nat_Orig'
     }
@@ -148,21 +148,31 @@ with tab2:
                 
                 st.divider()
 
-                # --- [신규] 어카운트별 실적 요약 테이블 ---
-                st.subheader("🏢 어카운트(거래처)별 실적 요약")
-                acc_summary = db_df.groupby('Account').agg({
-                    'RN': 'sum',
-                    'Room_Revenue': 'sum'
-                }).reset_index()
-                acc_summary['ADR'] = (acc_summary['Room_Revenue'] / acc_summary['RN']).fillna(0).astype(int)
-                acc_summary = acc_summary.sort_values('Room_Revenue', ascending=False).reset_index(drop=True)
+                col_a, col_b = st.columns(2)
                 
-                # 가독성을 위해 천단위 콤마 추가
-                acc_display = acc_summary.copy()
-                acc_display['Room_Revenue'] = acc_display['Room_Revenue'].apply(lambda x: f"{x:,.0f}")
-                acc_display['ADR'] = acc_display['ADR'].apply(lambda x: f"{x:,.0f}")
-                
-                st.table(acc_display) # 깔끔한 표로 출력
+                with col_a:
+                    # 🏢 어카운트별 실적 요약
+                    st.subheader("🏢 어카운트(거래처)별 실적")
+                    acc_summary = db_df.groupby('Account').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
+                    acc_summary['ADR'] = (acc_summary['Room_Revenue'] / acc_summary['RN']).fillna(0).astype(int)
+                    acc_summary = acc_summary.sort_values('Room_Revenue', ascending=False)
+                    
+                    acc_display = acc_summary.copy()
+                    acc_display['Room_Revenue'] = acc_display['Room_Revenue'].apply(lambda x: f"{x:,.0f}")
+                    acc_display['ADR'] = acc_display['ADR'].apply(lambda x: f"{x:,.0f}")
+                    st.table(acc_display)
+
+                with col_b:
+                    # 🛏️ 객실 타입별 실적 요약 (신규 추가)
+                    st.subheader("🛏️ 객실 타입별 실적")
+                    rt_summary = db_df.groupby('Room_Type').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
+                    rt_summary['ADR'] = (rt_summary['Room_Revenue'] / rt_summary['RN']).fillna(0).astype(int)
+                    rt_summary = rt_summary.sort_values('Room_Revenue', ascending=False)
+                    
+                    rt_display = rt_summary.copy()
+                    rt_display['Room_Revenue'] = rt_display['Room_Revenue'].apply(lambda x: f"{x:,.0f}")
+                    rt_display['ADR'] = rt_display['ADR'].apply(lambda x: f"{x:,.0f}")
+                    st.table(rt_display)
 
                 st.divider()
                 # 기존 차트
