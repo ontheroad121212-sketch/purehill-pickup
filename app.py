@@ -13,7 +13,7 @@ from gspread.exceptions import APIError
 # ------------------------------------------------------------------------------
 # 0. 스타일 & 유틸리티
 # ------------------------------------------------------------------------------
-st.set_page_config(page_title="ARI Final Complete", layout="wide")
+st.set_page_config(page_title="ARI Final Integrity", layout="wide")
 st.markdown("""
 <style>
     div[data-testid="stMetricValue"] { font-size: 24px !important; font-weight: 800; color: #333; }
@@ -50,7 +50,7 @@ def load_data_from_sheet(_sheet_obj):
     return []
 
 # ------------------------------------------------------------------------------
-# 2. 데이터 처리 엔진 (리드타임 강제 계산 유지)
+# 2. 데이터 처리 엔진 (리드타임 계산 로직 삭제 -> 원본 사용)
 # ------------------------------------------------------------------------------
 def normalize_and_map_columns(df):
     col_map = {}
@@ -65,7 +65,8 @@ def normalize_and_map_columns(df):
         'Segment': ['segment', '세그먼트'],
         'Account': ['account', 'source', 'agent', '거래처', '에이전시'],
         'Room_Type': ['type', 'cat', '객실타입', '룸타입'],
-        'Nat_Orig': ['nation', 'country', 'nat', '국적']
+        'Nat_Orig': ['nation', 'country', 'nat', '국적'],
+        'Lead_Time': ['lead', '리드', 'lt', 'l/t'] # 리드타임 컬럼 인식
     }
 
     for original_col in df.columns:
@@ -104,6 +105,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df_raw = pd.read_excel(uploaded_file, header=None)
 
         if is_otb:
+            # [OTB]
             df_raw = find_valid_header_row(df_raw)
             if '일자' in df_raw.columns: 
                 df_raw = df_raw[~df_raw['일자'].astype(str).str.contains('소계|Subtotal|합계|Total', na=False)]
@@ -132,6 +134,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df['Lead_Time'] = 0
             
         else:
+            # [리스트]
             df_raw = find_valid_header_row(df_raw)
             df_raw = df_raw[~df_raw.iloc[:, 0].astype(str).str.contains('합계|Total|소계|Subtotal', case=False, na=False)]
             
@@ -142,13 +145,13 @@ def process_data(uploaded_file, status, sub_segment="General"):
             if 'CheckIn' not in df.columns: return pd.DataFrame()
             if 'Booking_Date' not in df.columns: df['Booking_Date'] = df['CheckIn']
             
-            req_cols = ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Guest_Name', 'Segment', 'Account', 'Room_Type', 'Nat_Orig']
+            req_cols = ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Guest_Name', 'Segment', 'Account', 'Room_Type', 'Nat_Orig', 'Lead_Time']
             for c in req_cols:
                 if c not in df.columns: 
-                    if c in ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue']: df[c] = 0 
+                    if c in ['Rooms', 'Nights', 'Room_Revenue', 'Total_Revenue', 'Lead_Time']: df[c] = 0 
                     else: df[c] = 'Unknown'
 
-            for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
+            for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights', 'Lead_Time']:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
             df['Total_Revenue'] = np.where(df['Total_Revenue'] == 0, df['Room_Revenue'], df['Total_Revenue'])
@@ -157,11 +160,10 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df['Is_Zero_Rate'] = df['Room_Revenue'] <= 0
             df['ADR'] = df.apply(lambda x: x['Room_Revenue'] / x['RN'] if x['RN'] > 0 else 0, axis=1)
 
-        # 공통 처리
+        # 공통
         df['Snapshot_Date'] = datetime.now().strftime('%Y-%m-%d')
         df['Status'] = status
         
-        # 날짜 파싱 & 리드타임 강제 계산
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
@@ -176,9 +178,8 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Weekday_Num'] = df['CheckIn_dt'].dt.weekday
         df['Day_Type'] = df['Weekday_Num'].apply(lambda x: 'Weekend' if x >= 4 else 'Weekday')
 
-        # 리드타임 강제 계산 (입실 - 예약)
-        df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
-        df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
+        # [지배인님 요청] 리드타임 강제 계산 로직 삭제 -> 엑셀 값 그대로 사용
+        df['Lead_Time'] = df['Lead_Time'].fillna(0).astype(int)
         
         def classify_nat(row):
             name = str(row.get('Guest_Name', ''))
@@ -200,7 +201,6 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Month_Label'] = df['CheckIn_dt'].apply(get_month_label)
 
         df['CheckIn'] = df['CheckIn_dt'].dt.strftime('%Y-%m-%d')
-        
         cols = ['Guest_Name', 'CheckIn', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Status', 'Stay_Month', 'Booking_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_Type', 'Day_of_Week', 'Nat_Group', 'Month_Label', 'Is_Zero_Rate']
         
         final_df = pd.DataFrame()
@@ -212,33 +212,31 @@ def process_data(uploaded_file, status, sub_segment="General"):
         return pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 3. 공통 분석 모듈 (세그먼트 월별 + 페이싱 ADR + KEY 중복 방지)
+# 3. 공통 분석 모듈 (세그먼트 월별 상세 + 페이싱 ADR 완벽 복구)
 # ------------------------------------------------------------------------------
 def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
     if target_df.empty:
         st.warning(f"⚠️ {title_prefix} 데이터가 없습니다.")
         return
 
-    # 탭 구성: 세그먼트, 패턴, 거래처, 리드타임, 객실타입, 요일
+    # 탭 구성
     t1, t2, t3, t4, t5, t6 = st.tabs([
         "📊 세그먼트 분석", "📅 예약패턴(Pacing)", "🏢 거래처", 
         "⏳ 리드타임", "🛏️ 객실타입", "🗓️ 요일별"
     ])
     
-    # 1. 세그먼트 (월별 상세 추가됨!)
+    # 1. 세그먼트 (월별 상세 복구)
     with t1:
         st.subheader(f"📊 {title_prefix} 세그먼트 상세")
-        
-        # 상단 요약
         seg_stats = target_df.groupby('Segment').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
         seg_stats['ADR'] = (seg_stats['Room_Revenue'] / seg_stats['RN']).fillna(0)
         
         c1, c2 = st.columns(2)
-        c1.plotly_chart(px.pie(seg_stats, values='Room_Revenue', names='Segment', title="세그먼트별 매출 비중"), use_container_width=True, key=f"{title_prefix}_seg_pie")
-        c2.plotly_chart(px.bar(seg_stats, x='Segment', y='ADR', title="세그먼트별 ADR 비교", text_auto=',.0f', color='Segment'), use_container_width=True, key=f"{title_prefix}_seg_bar")
+        c1.plotly_chart(px.pie(seg_stats, values='Room_Revenue', names='Segment', title="매출 비중"), use_container_width=True, key=f"{title_prefix}_seg_pie")
+        c2.plotly_chart(px.bar(seg_stats, x='Segment', y='ADR', title="세그먼트별 ADR", text_auto=',.0f', color='Segment'), use_container_width=True, key=f"{title_prefix}_seg_bar")
         
         st.divider()
-        st.markdown("##### 📅 세그먼트 x 월별 상세 실적 (요청하신 기능 복구)")
+        st.markdown("##### 📅 세그먼트 x 월별 상세 실적 (RN / ADR / 매출)")
         # [복구] 세그먼트 월별 상세 테이블
         seg_monthly = target_df.groupby(['Segment', 'Stay_Month']).agg({
             'RN': 'sum', 
@@ -256,11 +254,11 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
                          "RN": st.column_config.NumberColumn("RN", format="%d")
                      }, hide_index=True, use_container_width=True)
 
-    # 2. Pacing (ADR 옵션 추가됨!)
+    # 2. Pacing (ADR 옵션 복구)
     with t2:
         st.subheader(f"📅 {title_prefix} Pacing (예약월 vs 입실월)")
         
-        # [복구] ADR 라디오 버튼
+        # [복구] ADR 선택 옵션
         pivot_metric = st.radio("분석 기준", ["객실수 (RN)", "객실매출", "객실단가 (ADR)"], horizontal=True, key=f"{title_prefix}_pacing_radio")
         
         if "ADR" in pivot_metric:
@@ -292,7 +290,7 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
 
     # 4. 리드타임
     with t4:
-        st.subheader(f"⏳ {title_prefix} 리드타임 분석")
+        st.subheader(f"⏳ {title_prefix} 리드타임 분석 (파일 원본 값)")
         bins = [-1, 0, 3, 7, 14, 30, 60, 90, 999]
         labels = ['당일', '1-3일', '4-7일', '8-14일', '15-30일', '31-60일', '61-90일', '90일+']
         temp_df = target_df.copy()
@@ -321,7 +319,6 @@ def render_rich_analysis(target_df, title_prefix, color_scale="Blues"):
         st.subheader(f"🗓️ {title_prefix} 요일별 분석")
         wd_stats = target_df.groupby('Day_Type').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
         wd_stats['ADR'] = (wd_stats['Room_Revenue'] / wd_stats['RN']).fillna(0)
-        
         c1, c2 = st.columns(2)
         c1.plotly_chart(px.bar(wd_stats, x='Day_Type', y='ADR', title="요일별 ADR", text_auto=',.0f'), use_container_width=True, key=f"{title_prefix}_wd_bar")
         c2.plotly_chart(px.pie(wd_stats, values='RN', names='Day_Type', title="요일별 비중"), use_container_width=True, key=f"{title_prefix}_wd_pie")
@@ -341,8 +338,9 @@ try:
     except:
         budget_df = pd.DataFrame(columns=['Month', 'Budget'])
 
-    st.title("🏛️ 앰버 호텔 경영 리포트 (GM Perfect Edition)")
+    st.title("🏛️ 앰버 호텔 경영 리포트 (Final Integrity)")
 
+    # 초기화
     with st.sidebar.expander("🛠️ 데이터 관리", expanded=True):
         if st.button("🗑️ 전체 데이터 삭제 (필수)"):
             db_sheet.clear()
@@ -397,27 +395,30 @@ try:
                 time.sleep(2)
                 st.rerun()
 
+    # 데이터 로드
     raw_data = load_data_from_sheet(db_sheet)
     if len(raw_data) <= 1:
         st.warning("⚠️ 데이터가 없습니다. 파일을 업로드해주세요.")
     else:
         df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
         
+        # 수치 변환
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         if 'Booking_Date' not in df.columns: df['Booking_Date'] = df['CheckIn']
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
-        df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
-        df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
+        # 리드타임: 계산 안함. 파일에 있는 값 그대로 사용
+        df['Lead_Time'] = df['Lead_Time'].astype(int)
         
         df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
         df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m') # 필터링용
+        df['Stay_Month'] = df['CheckIn_dt'].dt.strftime('%Y-%m')
         
+        # 데이터 분리
         df_otb_m = df[df['Segment'] == 'OTB_Month']
         df_otb_t = df[df['Segment'] == 'OTB_Total']
         
@@ -437,12 +438,11 @@ try:
         with main_tab0:
             st.header("👑 Executive Summary")
             
-            # 1. 예약 유입 속도 (최근 생성일 기준)
+            # 1. 예약 유입 속도
             st.subheader("🚀 최근 예약 유입 속도 (Booking Velocity)")
             if not df_paid_bk.empty:
                 recent_bk = df_paid_bk.groupby('Booking_Month').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
-                recent_bk = recent_bk.sort_values('Booking_Month').tail(12) # 최근 12개월
-                
+                recent_bk = recent_bk.sort_values('Booking_Month').tail(12)
                 c1, c2 = st.columns(2)
                 c1.plotly_chart(px.line(recent_bk, x='Booking_Month', y='RN', title="월별 예약 생성량 (RN)", markers=True), use_container_width=True)
                 c2.plotly_chart(px.bar(recent_bk, x='Booking_Month', y='Room_Revenue', title="월별 예약 생성액 (매출)", text_auto='.2s'), use_container_width=True)
