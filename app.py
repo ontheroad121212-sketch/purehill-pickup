@@ -38,7 +38,7 @@ def load_data_from_sheet(_sheet_obj):
     return []
 
 # ------------------------------------------------------------------------------
-# 2. 데이터 처리 엔진
+# 2. 데이터 처리 엔진 (로직 대폭 강화)
 # ------------------------------------------------------------------------------
 def normalize_and_map_columns(df):
     col_map = {}
@@ -138,7 +138,12 @@ def process_data(uploaded_file, status, sub_segment="General"):
             for col in ['Room_Revenue', 'Total_Revenue', 'Rooms', 'Nights']:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
+            # [ADR/RN 정밀 계산]
             df['RN'] = df['Rooms'] * df['Nights'].replace(0, 1)
+            # 0원 예약 분리용 플래그 (ADR 계산 시 0원 제외를 위해 중요)
+            df['Is_Zero_Rate'] = df['Room_Revenue'] <= 0
+            
+            # ADR은 여기서 계산하지만, 대시보드에서는 다시 Sum/Sum으로 계산해야 정확함
             df['ADR'] = df.apply(lambda x: x['Room_Revenue'] / x['RN'] if x['RN'] > 0 else 0, axis=1)
 
         # 공통 파생 변수
@@ -148,14 +153,18 @@ def process_data(uploaded_file, status, sub_segment="General"):
         
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
+        
+        # [리드타임 오류 수정] Booking Date가 비정상이면 CheckIn으로 대체하여 0으로 만듦
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
         df = df.dropna(subset=['CheckIn_dt'])
 
         df['Stay_Month'] = df['CheckIn_dt'].dt.strftime('%Y-%m')
-        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m') # 여기서 생성
+        df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m')
         df['Stay_YearWeek'] = df['CheckIn_dt'].dt.strftime('%Y-%U주')
         df['Day_of_Week'] = df['CheckIn_dt'].dt.day_name()
+        
+        # [핵심] 리드타임 = 체크인 - 예약일 (음수는 0처리)
         df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
         df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
         
@@ -180,7 +189,6 @@ def process_data(uploaded_file, status, sub_segment="General"):
 
         df['CheckIn'] = df['CheckIn_dt'].dt.strftime('%Y-%m-%d')
         
-        # Booking_Month 포함 19개 컬럼
         cols = ['Guest_Name', 'CheckIn', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Status', 'Stay_Month', 'Booking_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Nat_Group', 'Month_Label', 'Is_Zero_Rate']
         
         final_df = pd.DataFrame()
@@ -210,11 +218,9 @@ try:
 
     st.title("🏛️ 앰버 호텔 경영 리포트 (Intelligence Master)")
 
-    # 초기화 및 업로드
     with st.sidebar.expander("🛠️ 데이터 초기화", expanded=True):
         if st.button("🗑️ 전체 데이터 삭제"):
             db_sheet.clear()
-            # 헤더에 Booking_Month 추가됨
             cols = ['Guest_Name', 'CheckIn', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Status', 'Stay_Month', 'Booking_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Nat_Group', 'Month_Label', 'Is_Zero_Rate']
             db_sheet.append_row(cols)
             load_data_from_sheet.clear()
@@ -266,34 +272,31 @@ try:
                 time.sleep(2)
                 st.rerun()
 
-    # --------------------------------------------------------------------------
-    # 데이터 로드 및 '자가 복구(Self-Healing)' 로직
-    # --------------------------------------------------------------------------
+    # 데이터 로드
     raw_data = load_data_from_sheet(db_sheet)
     if len(raw_data) <= 1:
         st.warning("⚠️ 데이터가 없습니다. 파일을 업로드해주세요.")
     else:
         df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
         
-        # [핵심 수정] 수치형 변환
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Lead_Time']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # [긴급 복구] Booking_Month가 없거나 비어있으면 즉석에서 다시 만듦
-        # 1. Booking_Date 파싱 (없으면 CheckIn 사용)
+        # [긴급 복구 로직]
         if 'Booking_Date' not in df.columns: df['Booking_Date'] = df['CheckIn']
         df['Booking_dt'] = pd.to_datetime(df['Booking_Date'], errors='coerce')
         df['CheckIn_dt'] = pd.to_datetime(df['CheckIn'], errors='coerce')
         df.loc[df['Booking_dt'].isna(), 'Booking_dt'] = df.loc[df['Booking_dt'].isna(), 'CheckIn_dt']
         
-        # 2. Booking_Month 재생성
         df['Booking_Month'] = df['Booking_dt'].dt.strftime('%Y-%m')
-        
-        # 3. 기타 파생변수 재생성
         df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
         df['Stay_Month'] = df['CheckIn_dt'].dt.strftime('%Y-%m')
         
+        # [리드타임 재계산]
+        df['Lead_Time'] = (df['CheckIn_dt'] - df['Booking_dt']).dt.days.fillna(0).astype(int)
+        df['Lead_Time'] = df['Lead_Time'].apply(lambda x: 0 if x < 0 else x)
+
         all_snapshots = sorted(df['Snapshot_Date'].unique(), reverse=True)
         sel_snapshot = st.sidebar.selectbox("기준일(Snapshot)", ["전체 누적"] + all_snapshots)
         
@@ -304,12 +307,17 @@ try:
         df_otb_t = df[df['Segment'] == 'OTB_Total']
         
         df_list = df[~df['Segment'].str.contains('OTB')]
-        df_list_bk = df_list[df_list['Status'] == 'Booked']
+        
+        # [핵심] 유료 예약과 0원 예약을 완전히 분리
+        df_paid_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == False)]
+        df_zero_bk = df_list[(df_list['Status'] == 'Booked') & (df_list['Is_Zero_Rate'] == True)]
         df_list_cn = df_list[df_list['Status'] == 'Cancelled']
 
         curr_month = datetime.now().strftime('%Y-%m')
 
+        # ----------------------------------------------------------------------
         # [영역 1] OTB 버짓 달성현황
+        # ----------------------------------------------------------------------
         st.markdown("### 🎯 세일즈 온더북 버짓 달성현황 (Source: OTB File)")
         
         if not df_otb_m.empty:
@@ -355,7 +363,9 @@ try:
 
         st.divider()
 
+        # ----------------------------------------------------------------------
         # [영역 2] 상세 인사이트
+        # ----------------------------------------------------------------------
         st.markdown("### 📊 예약/취소 상세 인사이트 (Source: List File)")
         
         if df_list.empty:
@@ -367,7 +377,7 @@ try:
                 "⏳ 리드타임 & 단가", 
                 "🛏️ 객실타입 효율", 
                 "❌ 취소 분석",
-                "📈 합계 데이터"
+                "🆓 0원 예약(격리)" 
             ])
             
             with tab1:
@@ -375,17 +385,18 @@ try:
                 pivot_metric = st.radio("분석 기준", ["객실수 (RN)", "객실매출"], horizontal=True)
                 val_col = 'RN' if "RN" in pivot_metric else 'Room_Revenue'
                 
-                # 피벗 테이블 (에러 방지를 위해 컬럼 존재 여부 체크 안해도 위에서 만들었음)
-                pacing = df_list_bk.pivot_table(index='Booking_Month', columns='Stay_Month', values=val_col, aggfunc='sum', fill_value=0)
+                # 유료 데이터만 사용
+                pacing = df_paid_bk.pivot_table(index='Booking_Month', columns='Stay_Month', values=val_col, aggfunc='sum', fill_value=0)
                 fig = px.imshow(pacing, text_auto=True if "RN" in pivot_metric else ".2s", aspect="auto",
                                 color_continuous_scale="Blues", title=f"{pivot_metric} Heatmap")
                 st.plotly_chart(fig, use_container_width=True)
 
             with tab2:
-                st.subheader("🏢 거래처 포트폴리오")
-                acc_stats = df_list_bk.groupby('Account').agg({
+                st.subheader("🏢 거래처 포트폴리오 (유료 예약 기준)")
+                acc_stats = df_paid_bk.groupby('Account').agg({
                     'RN': 'sum', 'Room_Revenue': 'sum', 'Total_Revenue': 'sum'
                 }).reset_index()
+                # ADR 정밀 재계산 (Total Rev / Total RN)
                 acc_stats['ADR'] = (acc_stats['Room_Revenue'] / acc_stats['RN']).fillna(0)
                 
                 fig_acc = px.scatter(acc_stats, x="RN", y="ADR", size="Room_Revenue", color="Account",
@@ -401,12 +412,12 @@ try:
                              }, hide_index=True, use_container_width=True)
 
             with tab3:
-                st.subheader("⏳ 리드타임 & ADR")
+                st.subheader("⏳ 리드타임 & ADR (유료 예약 기준)")
                 bins = [-1, 0, 3, 7, 14, 30, 60, 90, 999]
                 labels = ['당일', '1-3일', '4-7일', '8-14일', '15-30일', '31-60일', '61-90일', '90일+']
-                df_list_bk['Lead_Group'] = pd.cut(df_list_bk['Lead_Time'], bins=bins, labels=labels)
+                df_paid_bk['Lead_Group'] = pd.cut(df_paid_bk['Lead_Time'], bins=bins, labels=labels)
                 
-                lead_stats = df_list_bk.groupby('Lead_Group').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
+                lead_stats = df_paid_bk.groupby('Lead_Group').agg({'RN': 'sum', 'Room_Revenue': 'sum'}).reset_index()
                 lead_stats['ADR'] = (lead_stats['Room_Revenue'] / lead_stats['RN']).fillna(0)
                 
                 fig_lead = go.Figure()
@@ -416,8 +427,8 @@ try:
                 st.plotly_chart(fig_lead, use_container_width=True)
 
             with tab4:
-                st.subheader("🛏️ 객실타입 효율")
-                rt_stats = df_list_bk.groupby('Room_Type').agg({
+                st.subheader("🛏️ 객실타입 효율 (유료 예약 기준)")
+                rt_stats = df_paid_bk.groupby('Room_Type').agg({
                     'RN': 'sum', 'Room_Revenue': 'sum', 'Total_Revenue': 'sum'
                 }).reset_index()
                 rt_stats['ADR'] = (rt_stats['Room_Revenue'] / rt_stats['RN']).fillna(0)
@@ -443,10 +454,10 @@ try:
                     st.info("취소 데이터가 없습니다.")
 
             with tab6:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("총 객실수 (RN)", f"{df_list_bk['RN'].sum():,.0f} RN")
-                c2.metric("총 객실매출", f"{df_list_bk['Room_Revenue'].sum():,.0f} 원")
-                c3.metric("총 매출 (부대포함)", f"{df_list_bk['Total_Revenue'].sum():,.0f} 원")
+                st.subheader("🆓 0원 예약 (격리구역)")
+                st.caption("※ 여기 있는 데이터는 다른 탭의 분석(ADR, 리드타임 등)에 전혀 영향을 주지 않습니다.")
+                st.write(f"총 {len(df_zero_bk)}건의 0원 예약")
+                st.dataframe(df_zero_bk[['Guest_Name', 'CheckIn', 'Account', 'Room_Type']], use_container_width=True)
 
 except Exception as e:
     st.error(f"🚨 시스템 오류: {e}")
