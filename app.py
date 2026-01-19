@@ -7,7 +7,7 @@ from datetime import datetime
 import plotly.express as px
 import numpy as np
 
-# 1. 구글 시트 연결 (인증 정보 전체 유지)
+# 1. 구글 시트 연결 (인증 정보 무삭제 사수)
 def get_gspread_client():
     try:
         creds_info = st.secrets["gcp_service_account"]
@@ -25,13 +25,12 @@ def process_data(uploaded_file, status, sub_segment="General"):
         is_otb = "Sales on the Book" in uploaded_file.name or "영업 현황" in uploaded_file.name
         
         if is_otb:
-            # [영업현황] 4번째 줄부터 데이터 시작, 소계 제거, 오른쪽 합계 섹션 추출
             if uploaded_file.name.endswith('.csv'):
                 df_raw = pd.read_csv(uploaded_file, skiprows=3)
             else:
                 df_raw = pd.read_excel(uploaded_file, skiprows=3)
             
-            # 소계 및 합계 행 완전 제거 (지표 중복 방지)
+            # 소계 및 합계 행 즉시 제거 (지표 중복 방지)
             df_raw = df_raw[df_raw['일자'].notna()]
             df_raw = df_raw[~df_raw['일자'].astype(str).str.contains('소계|Subtotal|합계|Total|합 계', na=False)]
             
@@ -46,7 +45,7 @@ def process_data(uploaded_file, status, sub_segment="General"):
             df['ADR'] = pd.to_numeric(df_raw.iloc[:, 16], errors='coerce').fillna(0)
             
             df['Booking_Date'] = df['CheckIn']
-            df['Segment'] = f'OTB_{sub_segment}' # 당월/전체 구분용
+            df['Segment'] = f'OTB_{sub_segment}'
             df['Account'] = 'General'
             df['Room_Type'] = 'Standard'
             df['Nat_Orig'] = 'KOR'
@@ -109,15 +108,13 @@ def process_data(uploaded_file, status, sub_segment="General"):
         df['Month_Label'] = df['CheckIn_dt'].apply(get_month_label)
 
         df['CheckIn'] = df['CheckIn_dt'].dt.strftime('%Y-%m-%d')
-        if 'Booking_Date' in df.columns:
-            df['Booking_Date'] = df['Booking_dt'].dt.strftime('%Y-%m-%d')
-
+        # 18개 컬럼 순서 및 구성 무삭제
         return df[['Guest_Name', 'CheckIn', 'RN', 'Room_Revenue', 'Total_Revenue', 'ADR', 'Segment', 'Account', 'Room_Type', 'Snapshot_Date', 'Status', 'Stay_Month', 'Stay_YearWeek', 'Lead_Time', 'Day_of_Week', 'Nat_Group', 'Month_Label', 'Is_Zero_Rate']]
     except Exception as e:
         st.error(f"🚨 파일 처리 중 치명적 오류: {e}")
         return pd.DataFrame()
 
-# 3. 상세 분석 렌더링 함수
+# 3. 상세 분석 렌더링
 def render_full_analysis(data, title):
     if data is None or data.empty:
         st.info(f"📍 {title} 데이터가 없습니다.")
@@ -151,44 +148,46 @@ try:
     except:
         budget_df = pd.DataFrame(columns=['Month', 'Budget'])
 
-    st.header("🏛️ 앰버 호텔 경영 요약 리포트 (ARI Extreme)")
+    st.header("🏛️ 앰버 호텔 실시간 경영 리포트 (ARI Extreme)")
 
-    # 1. 사이드바 - 업로드 버튼 4종 완전 분리 (지배인님 엄명)
+    # [핵심] 사이드바 - 업로드 버튼 4종 완전 분리 (지배인님 명령)
     st.sidebar.subheader("📤 데이터 업로드 센터")
-    
     with st.sidebar.expander("📝 1. 신규 예약 리스트 업로드", expanded=False):
-        f_new = st.file_uploader("신규 파일 선택", type=['xlsx', 'csv'], key="up_new")
+        f_new = st.file_uploader("신규 파일 선택", type=['xlsx', 'csv'], key="up_new_l")
         if f_new and st.button("신규 예약 반영"):
             db_sheet.append_rows(process_data(f_new, "Booked").fillna('').astype(str).values.tolist())
             st.success("완료!")
 
     with st.sidebar.expander("❌ 2. 취소 리스트 업로드", expanded=False):
-        f_cn = st.file_uploader("취소 파일 선택", type=['xlsx', 'csv'], key="up_cn")
+        f_cn = st.file_uploader("취소 파일 선택", type=['xlsx', 'csv'], key="up_cn_l")
         if f_cn and st.button("취소 내역 반영"):
             db_sheet.append_rows(process_data(f_cn, "Cancelled").fillna('').astype(str).values.tolist())
             st.success("완료!")
 
     with st.sidebar.expander("🗓️ 3. 영업현황 (당월 전용)", expanded=True):
-        f_otb_m = st.file_uploader("당월 OTB 선택", type=['xlsx', 'csv'], key="up_m")
+        f_otb_m = st.file_uploader("당월 OTB 선택", type=['xlsx', 'csv'], key="up_m_o")
         if f_otb_m and st.button("당월 OTB 저장"):
             db_sheet.append_rows(process_data(f_otb_m, "Booked", "Month").fillna('').astype(str).values.tolist())
             st.success("완료!")
 
     with st.sidebar.expander("🌍 4. 영업현황 (전체 누적)", expanded=True):
-        f_otb_t = st.file_uploader("전체 OTB 선택", type=['xlsx', 'csv'], key="up_t")
+        f_otb_t = st.file_uploader("전체 OTB 선택", type=['xlsx', 'csv'], key="up_t_o")
         if f_otb_t and st.button("전체 OTB 저장"):
             db_sheet.append_rows(process_data(f_otb_t, "Booked", "Total").fillna('').astype(str).values.tolist())
             st.success("완료!")
 
-    # 2. 데이터 로드 및 2종 버짓 대시보드
+    # 2. 데이터 로드 및 에러 원천 차단
     raw_db = db_sheet.get_all_values()
     if len(raw_db) > 1:
         df = pd.DataFrame(raw_db[1:], columns=raw_db[0])
+        
+        # [충돌 박멸 로직] 모든 수치형 강제 변환
         for col in ['RN', 'Room_Revenue', 'Total_Revenue', 'ADR']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # [에러 박멸] Is_Zero_Rate 타입 강제 보정 및 필터링
-        df['Is_Zero_Rate'] = df['Is_Zero_Rate'].astype(str).str.upper().map({'TRUE': True, 'FALSE': False}).fillna(False)
+        # [가장 중요한 Is_Zero_Rate 방어막]
+        # 시트에 컬럼이 없거나 타입이 꼬여있어도 실시간 계산으로 덮어씌움
+        df['Is_Zero_Rate'] = df['Total_Revenue'] <= 0
 
         all_dates = sorted(df['Snapshot_Date'].unique(), reverse=True)
         sel_date = st.sidebar.selectbox("Snapshot 선택", ["전체 누적"] + all_dates)
@@ -209,20 +208,19 @@ try:
         t_budget = budget_df['Budget'].sum()
         t_achieve = (t_rev / t_budget * 100) if t_budget > 0 else 0
 
+        # --- [최상단] 2종 버짓 대시보드 ---
         st.subheader(f"🎯 실시간 버짓 달성 현황 ({sel_date})")
         colA, colB = st.columns(2)
         with colA:
             st.info(f"🗓️ {curr_month} 당월 버짓 현황")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("달성률", f"{m_achieve:.1f}%", delta=f"T:{m_budget:,.0f}")
-            c2.metric("매출", f"{m_rev:,.0f} 원")
-            c3.metric("ADR", f"{(m_rev/m_rn if m_rn>0 else 0):,.0f} 원"); c4.metric("RN", f"{m_rn:,.0f} RN")
+            c2.metric("매출", f"{m_rev:,.0f} 원"); c3.metric("ADR", f"{(m_rev/m_rn if m_rn>0 else 0):,.0f} 원"); c4.metric("RN", f"{m_rn:,.0f} RN")
         with colB:
             st.info("🌍 전체 기간 누적 버짓 현황")
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("전체 달성률", f"{t_achieve:.1f}%", delta=f"T:{t_budget:,.0f}")
-            k2.metric("누적 매출", f"{t_rev:,.0f} 원")
-            k3.metric("누적 ADR", f"{(t_rev/t_rn if t_rn>0 else 0):,.0f} 원"); k4.metric("누적 RN", f"{t_rn:,.0f} RN")
+            k2.metric("누적 매출", f"{t_rev:,.0f} 원"); k3.metric("누적 ADR", f"{(t_rev/t_rn if t_rn>0 else 0):,.0f} 원"); k4.metric("누적 RN", f"{t_rn:,.0f} RN")
         
         st.divider()
 
@@ -236,7 +234,7 @@ try:
             st.table(m_res.style.format({'RN':'{:,}', 'Room_Revenue':'{:,}', 'Budget':'{:,}', '달성률(%)':'{}%'}))
         
         with tab_week:
-            # 주별 순매출 (OTB + 취소 반영)
+            # 주별 순매출 (OTB + 취소 리스트 반영)
             net_df = pd.concat([otb_t, f_df[f_df['Status'] == 'Cancelled'].assign(RN=lambda x: -x['RN'], Room_Revenue=lambda x: -x['Room_Revenue'])])
             w_sum = net_df.groupby('Stay_YearWeek').agg({'RN':'sum', 'Room_Revenue':'sum'}).reset_index()
             st.plotly_chart(px.line(w_sum, x='Stay_YearWeek', y='Room_Revenue', markers=True, title="주별 순매출 추이"), use_container_width=True)
@@ -245,14 +243,14 @@ try:
             detail_bk = paid_df[(~paid_df['Segment'].str.contains('OTB', na=False)) & (paid_df['Status'] == 'Booked')]
             detail_cn = f_df[(~f_df['Segment'].str.contains('OTB', na=False)) & (f_df['Status'] == 'Cancelled')]
             t1, t2 = st.tabs(["✅ 유료 예약 상세", "❌ 취소 리스트 상세"])
-            with t1: render_full_analysis(detail_bk, "유료 예약 리스트")
-            with t2: render_full_analysis(detail_cn, "취소 내역 리스트")
+            with t1: render_full_analysis(detail_bk, "유료 예약")
+            with t2: render_full_analysis(detail_cn, "취소 내역")
 
         with tab_zero:
-            st.subheader("🆓 0원 예약 목록 (상세 리스트 기준)")
+            st.subheader("🆓 0원 예약 목록 (체험단/VIP 등)")
             st.dataframe(f_df[f_df['Is_Zero_Rate'] == True][['Guest_Name', 'CheckIn', 'Account', 'Room_Type']])
     else:
-        st.warning("📡 사이드바에서 [당월 OTB] 또는 [전체 OTB] 파일을 먼저 업로드해 주세요.")
+        st.warning("📡 사이드바에서 [당월 OTB] 또는 [전체 OTB] 파일을 업로드해 주세요.")
 
 except Exception as e:
     st.error(f"🚨 시스템 오류: {e}")
