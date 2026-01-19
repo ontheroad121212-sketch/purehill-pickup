@@ -114,17 +114,19 @@ with tab2:
         if client:
             sh = client.open("Amber_Revenue_DB")
             worksheet = sh.get_worksheet(0)
-            all_records = worksheet.get_all_records()
             
-            if not all_records:
+            # get_all_records() 대신 모든 데이터를 리스트로 가져와서 처리
+            raw_data = worksheet.get_all_values()
+            
+            if len(raw_data) <= 1: # 헤더만 있거나 데이터가 없는 경우
                 st.info("데이터베이스에 쌓인 데이터가 없습니다. 먼저 업로드 탭에서 데이터를 저장해 주세요.")
             else:
-                db_df = pd.DataFrame(all_records)
+                # 첫 번째 행을 헤더로, 나머지를 데이터로 분리
+                db_df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
                 
-                # 수치 데이터 변환
+                # 수치 데이터 변환 (가져올 때 문자열이므로 숫자로 변환 필수)
                 db_df['Revenue'] = pd.to_numeric(db_df['Revenue'], errors='coerce').fillna(0)
                 db_df['RN'] = pd.to_numeric(db_df['RN'], errors='coerce').fillna(0)
-                
                 # --- 상단 주요 지표 (KPI) ---
                 kpi1, kpi2, kpi3 = st.columns(3)
                 total_rn = db_df['RN'].sum()
